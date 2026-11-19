@@ -1,6 +1,5 @@
 using System.Collections;
 using System.Linq;
-using Eflatun.SceneReference;
 using UnityEngine;
 using Debug = System.Diagnostics.Debug;
 
@@ -14,8 +13,6 @@ namespace MoSimCore.SceneTransitions
     {
         /// <summary>Gets the singleton instance of the SceneManager.</summary>
         public static SceneManager Instance { get; private set; }
-
-        public bool IsLoading { get; private set; }
 
         [Tooltip("GameObject containing all available SceneTransition components as children.")]
         public GameObject transitionsContainer;
@@ -39,17 +36,6 @@ namespace MoSimCore.SceneTransitions
             
             _transitions = transitionsContainer.GetComponentsInChildren<SceneTransition>();
         }
-        
-        /// <summary>
-        /// Loads a scene with a transition animation.
-        /// </summary>
-        /// <param name="scene">The SceneReference to the scene to load.</param>
-        /// <param name="transitionName">The name of the transition GameObject to use.</param>
-        /// <param name="delayAfterLoad">Delay in seconds after scene loads before transitioning out.</param>
-        public void LoadScene(SceneReference scene, string transitionName, float delayAfterLoad = 0.5f)
-        {
-            LoadScene(scene.Name, transitionName, delayAfterLoad);
-        }
 
         /// <summary>
         /// Loads a scene with a transition animation.
@@ -59,20 +45,7 @@ namespace MoSimCore.SceneTransitions
         /// <param name="delayAfterLoad">Delay in seconds after scene loads before transitioning out.</param>
         public void LoadScene(string sceneName, string transitionName, float delayAfterLoad = 0.5f)
         {
-            if (IsLoading)
-            {
-                return;
-            }
-
-            if (!Application.CanStreamedLevelBeLoaded(sceneName))
-            {
-                throw new System.ArgumentException($"'{sceneName}' is not a scene in the build.", nameof(sceneName));
-            }
-
-            var transition = _transitions.First(t => t.name == transitionName);
-
-            IsLoading = true;
-            StartCoroutine(LoadSceneAsync(sceneName, transition, delayAfterLoad));
+            StartCoroutine(LoadSceneAsync(sceneName, transitionName, delayAfterLoad));
         }
 
         /// <summary>
@@ -133,19 +106,19 @@ namespace MoSimCore.SceneTransitions
         /// Waits for the scene to fully load before transitioning out.
         /// </summary>
         /// <param name="sceneName">The name of the scene to load.</param>
-        /// <param name="transition">The transition to use.</param>
+        /// <param name="transitionName">The name of the transition GameObject to use.</param>
         /// <param name="delayAfterLoad">Delay in seconds after scene loads before transitioning out.</param>
         /// <returns>An enumerator for coroutine execution.</returns>
-        private IEnumerator LoadSceneAsync(string sceneName, SceneTransition transition, float delayAfterLoad)
+        private IEnumerator LoadSceneAsync(string sceneName, string transitionName, float delayAfterLoad)
         {
+            var transition = _transitions.First(t => t.name == transitionName);
+            
             yield return transition.AnimateTransitionIn();
-
+            
             var scene = UnityEngine.SceneManagement.SceneManager.LoadSceneAsync(sceneName);
 
             Debug.Assert(scene != null, nameof(scene) + " != null");
-
-            scene.completed += _ => IsLoading = false;
-
+            
             while (!scene.isDone)
             {
                 yield return null;

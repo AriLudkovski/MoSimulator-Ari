@@ -16,15 +16,9 @@ namespace GameSystems.Scoring
         protected T BlueScoreData = new();
         protected T RedScoreData = new();
         protected TUI ScoreUI;
-
-        public T GetScoreData(Alliance alliance) =>
-            alliance == Alliance.Blue ? BlueScoreData : RedScoreData;
         
         public readonly List<IScorer> BlueScorers = new();
         public readonly List<IScorer> RedScorers = new();
-
-        /// <summary>Scorers already reported as inactive, so the report does not repeat every frame.</summary>
-        private readonly HashSet<IScorer> _reportedSkips = new();
 
         protected virtual void Awake()
         {
@@ -64,44 +58,43 @@ namespace GameSystems.Scoring
             
             foreach (var scorer in scorers)
             {
-                // Scorers are registered from a search that deliberately takes in inactive objects,
-                // so one being switched off is not a fault - it just has nothing to contribute this
-                // frame. Reported once, since the alternative was this line every frame of a match.
-                var mb = scorer as MonoBehaviour;
-                if (mb == null || !mb.isActiveAndEnabled)
+                if (scorer is not MonoBehaviour mb || !mb || !mb.isActiveAndEnabled)
                 {
-                    if (_reportedSkips.Add(scorer))
-                    {
-                        Debug.LogWarning($"ScoreHandler: {alliance} is skipping {scorer.GetType().Name}" +
-                                         $"{(mb != null ? $" on {mb.name}" : " (destroyed)")}, which is not active.");
-                    }
+                    Debug.LogError("ScoreHandler: Scorer is not a valid active MonoBehaviour.");
                     continue;
                 }
                 scorer.AddScore(scoreData, BaseGameManager.Instance.GameState);
             }
         }
         
-        protected virtual MoSimLib.SecureFloat GetTotalScore(Alliance alliance)
+        protected virtual int GetTotalScore(Alliance alliance)
         {
-            return alliance == Alliance.Blue ? BlueScoreData.TotalPoints + RedScoreData.PenaltyPoints: RedScoreData.TotalPoints + BlueScoreData.PenaltyPoints;
+            return alliance == Alliance.Blue ? BlueScoreData.TotalPoints : RedScoreData.TotalPoints;
         }
 
         public void RegisterScorer(IScorer scorer)
         {
-        
-            BlueScorers.Remove(scorer);
-            RedScorers.Remove(scorer);
-
             switch (scorer.Alliance)
             {
                 case Alliance.Blue:
+                    if (BlueScorers.Contains(scorer))
+                    {
+                        Debug.LogError("ScoreHandler: Attempted to register already registered Blue scorer.");
+                        break;
+                    }
                     BlueScorers.Add(scorer);
                     break;
                 case Alliance.Red:
+                    if (RedScorers.Contains(scorer))
+                    {
+                        Debug.LogError("ScoreHandler: Attempted to register already registered Red scorer.");
+                        break;
+                    }
                     RedScorers.Add(scorer);
                     break;
                 default:
-                    throw new ArgumentOutOfRangeException(nameof(scorer), $"ScoreHandler: invalid alliance {scorer.Alliance}.");
+                    Debug.LogError($"ScoreHandler: Attempted to register scorer with invalid alliance {scorer.Alliance}.");
+                    throw new ArgumentOutOfRangeException();
             }
         }
 
@@ -141,7 +134,6 @@ namespace GameSystems.Scoring
         public virtual void Reset()
         {
             UnregisterAllScorers();
-            _reportedSkips.Clear();
             BlueScoreData = new T();
             RedScoreData = new T();
             UpdateUI();

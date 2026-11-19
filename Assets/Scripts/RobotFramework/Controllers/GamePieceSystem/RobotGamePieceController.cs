@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using MoSimLib;
 using RobotFramework.Components;
 using RobotFramework.GamePieceSystem;
 using RobotFramework.Interfaces;
@@ -22,27 +21,12 @@ namespace RobotFramework.Controllers.GamePieceSystem
         
         private Dictionary<string, GamePieceControllerNode> _nodeQuickLookup;
 
-        // Add a new implementation before raising this boundary. Public entry points
-        // deliberately remain stable and select the implementation for the caller
-
-        private static void LogUnsupportedVersion(string apiName, MoSimVersion version)
-        {
-            Debug.LogError($"{apiName} does not support MoSim API version {version}.");
-        }
-
         protected void OnEnable()
         {
             _nodeQuickLookup = new Dictionary<string, GamePieceControllerNode>();
         }
 
-        public MoSimResult<MoSimLib.Void> SetPreload(GamePieceState state)
-        {
-            var version = MoSim.ActiveVersion;
-            SetPreloadV1(state);
-            return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-        }
-
-        private void SetPreloadV1(GamePieceState state)
+        public void SetPreload(GamePieceState state)
         {
             _preloadState = state;
         }
@@ -221,23 +205,7 @@ namespace RobotFramework.Controllers.GamePieceSystem
             return gamePieceData;
         }
 
-        public override MoSimResult<MoSimLib.Void> RunCoroutine(IEnumerator coroutine)
-        {
-            var version = MoSim.ActiveVersion;
-
-            RunCoroutineV1(coroutine);
-            return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-        }
-
-        public MoSimResult<MoSimLib.Void> RunCoroutine(MoSimResult<IEnumerator> coroutine)
-        {
-            var version = MoSim.ActiveVersion;
-
-            RunCoroutineV1(coroutine.Value);
-            return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-        }
-
-        private void RunCoroutineV1(IEnumerator coroutine)
+        public override void RunCoroutine(IEnumerator coroutine)
         {
             StartCoroutine(coroutine);
         }
@@ -249,13 +217,7 @@ namespace RobotFramework.Controllers.GamePieceSystem
         /// <returns></returns>
         public GamePieceControllerNode GetPieceByName(string nodeName)
         {
-            var version = MoSim.ActiveVersion;
-
-            return GetPieceByNameV1(nodeName);
-        }
-
-        private GamePieceControllerNode GetPieceByNameV1(string nodeName)
-        {
+            
             if (string.IsNullOrWhiteSpace(nodeName))
             {
                 return null;
@@ -277,37 +239,27 @@ namespace RobotFramework.Controllers.GamePieceSystem
         {
             [Tooltip("Name of the game piece node (e.g. Coral, Algae, etc.)")]
             public string pieceName;
-
+            
             [Tooltip("List of intakes associated with this node")]
             public List<GamePieceIntake<TPiece, TData>> intakes = new();
-
+            
             [Tooltip("Ordered list of states for this game piece node")]
             public GamePieceState[] gamePieceStates;
-
+            
             [Header("Runtime Variables (Read-Only)")]
             public GamePieceController<TPiece, TData> controller;
-
-            public int currentStateNum;
-            public bool atTarget;
+            public int currentStateNum = 0;
+            public bool atTarget = false;
             public string movingTo = "";
             public string wasMovingTo = "";
 
             [NonSerialized] public Dictionary<string, GamePieceData> StateLookup = new();
-
+            
             [HideInInspector] public RobotGamePieceController<TPiece, TData> gamePieceController;
 
-            public List<(bool, GamePieceIntake<TPiece, TData>)> requestIntake = new();
-
-            /// <summary>Releases with force relative to the holding target, independent of the piece's orientation.</summary>
-            public MoSimResult<bool> ReleaseGamePieceWithForce(Vector3 force,
-                ForceMode forceMode = ForceMode.Impulse,
-                bool whenAtTarget = true)
-            {
-                var version = MoSim.ActiveVersion;
-                return MoSimResult<bool>.Success(ReleaseGamePieceWithForceV1(force, forceMode, whenAtTarget));
-            }
-
-            private bool ReleaseGamePieceWithForceV1(Vector3 force,
+            public List<(bool, GamePieceIntake<TPiece, TData>)> requestIntake = new List<(bool, GamePieceIntake<TPiece, TData>)>();
+            
+            public bool ReleaseGamePieceWithForce(Vector3 force,
                 ForceMode forceMode = ForceMode.Impulse,
                 bool whenAtTarget = true)
             {
@@ -334,15 +286,7 @@ namespace RobotFramework.Controllers.GamePieceSystem
                 return false;
             }
             
-            /// <summary>Starts force in the holding target's axes, then follows the piece's rotation throughout release.</summary>
-            public MoSimResult<bool> ReleaseGamePieceWithContinuedForce(Vector3 force, float time, float maxSpeed,
-                bool whenAtTarget = true)
-            {
-                var version = MoSim.ActiveVersion;
-                return MoSimResult<bool>.Success(ReleaseGamePieceWithContinuedForceV1(force, time, maxSpeed, whenAtTarget));
-            }
-            
-            private bool ReleaseGamePieceWithContinuedForceV1(Vector3 force, float time, float maxSpeed,
+            public bool ReleaseGamePieceWithContinuedForce(Vector3 force, float time, float maxSpeed,
                 bool whenAtTarget = true)
             {
                 var node = this;
@@ -368,24 +312,12 @@ namespace RobotFramework.Controllers.GamePieceSystem
                 return false;
             }
 
-            public MoSimResult<bool> HasPiece()
-            {
-                var version = MoSim.ActiveVersion;
-                return MoSimResult<bool>.Success(HasPieceV1());
-            }
-
-            private bool HasPieceV1()
+            public bool HasPiece()
             {
                 return currentStateNum > 0;
             }
             
             public GamePieceState GetCurrentState()
-            {
-                var version = MoSim.ActiveVersion;
-                return GetCurrentStateV1();
-            }
-
-            private GamePieceState GetCurrentStateV1()
             {
                 var node = this;
                 if (node == null)
@@ -397,14 +329,7 @@ namespace RobotFramework.Controllers.GamePieceSystem
                     state.name.Equals(node.wasMovingTo, StringComparison.OrdinalIgnoreCase));
             }
             
-            public MoSimResult<MoSimLib.Void> SetTargetState(string stateName)
-            {
-                var version = MoSim.ActiveVersion;
-                SetTargetStateV1(stateName);
-                return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-            }
-
-            private void SetTargetStateV1(string stateName)
+            public void SetTargetState(string stateName)
             {
                 var node = this;
                 if (node == null)
@@ -428,31 +353,17 @@ namespace RobotFramework.Controllers.GamePieceSystem
                 node.movingTo = key;
             }
 
-            public MoSimResult<MoSimLib.Void> SetTargetState(GamePieceState state)
-            {
-                var version = MoSim.ActiveVersion;
-                SetTargetStateV1(state);
-                return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-            }
-
-            private void SetTargetStateV1(GamePieceState state)
+            public void SetTargetState(GamePieceState state)
             {
                 if (state == null)
                 {
                     Debug.LogError($"SetNodeTargetState called with null state for node '{pieceName}'.");
                     return;
                 }
-                SetTargetStateV1(state.name);
+                SetTargetState(state.name);
             }
             
-            public MoSimResult<MoSimLib.Void> RequestIntake(GamePieceIntake<TPiece, TData> intakePoint, bool requestIntake = true)
-            {
-                var version = MoSim.ActiveVersion;
-                RequestIntakeV1(intakePoint, requestIntake);
-                return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-            }
-
-            private void RequestIntakeV1(GamePieceIntake<TPiece, TData> intakePoint, bool requestIntake)
+            public void RequestIntake(GamePieceIntake<TPiece, TData> intakePoint, bool requestIntake = true)
             {
                 var node = this;
                 if (!intakePoint)
@@ -466,27 +377,14 @@ namespace RobotFramework.Controllers.GamePieceSystem
                 }
             }
             
-            public MoSimResult<MoSimLib.Void> MoveIntake(GamePieceIntake<TPiece, TData> intake, Transform newTarget)
-            {
-                var version = MoSim.ActiveVersion;
-                MoveIntakeV1(intake, newTarget);
-                return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-            }
-
-            private void MoveIntakeV1(GamePieceIntake<TPiece, TData> intake, Transform newTarget)
+            public void MoveIntake(GamePieceIntake<TPiece, TData> intake, Transform newTarget)
             {
                 if (!intake) return;
                 
                 intake.ChangeTarget(newTarget);
             }
             
-            public MoSimResult<bool> IntakeHasPieces(GamePieceIntake<TPiece, TData> intake)
-            {
-                var version = MoSim.ActiveVersion;
-                return MoSimResult<bool>.Success(IntakeHasPiecesV1(intake));
-            }
-
-            private bool IntakeHasPiecesV1(GamePieceIntake<TPiece, TData> intake)
+            public bool IntakeHasPieces(GamePieceIntake<TPiece, TData> intake)
             {
                 var pieceNode = this;
                 if (pieceNode == null)
@@ -496,11 +394,6 @@ namespace RobotFramework.Controllers.GamePieceSystem
 
                 return intake && intake.hasGamePiece;
             }
-
-            #region LegacyAPI
-
-
-            #endregion
         }
     }
 }

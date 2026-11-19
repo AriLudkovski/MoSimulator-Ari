@@ -1,12 +1,13 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
-using GameSystems.Modding;
-using GameSystems.Settings;
-using MoSimCore.GameSelection;
+using System.IO;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using RobotFramework;
 using UnityEngine;
+using UnityEngine.AddressableAssets;
+using UnityEngine.ResourceManagement.AsyncOperations;
 
 namespace GameSystems.Management
 {
@@ -14,127 +15,22 @@ namespace GameSystems.Management
     {
         public static RobotLoader Instance { get; private set; }
 
-        private ModManager _modManager;
+        private const string RobotMetadataLabel = "robot_metadata";
+        private const string ModpackMetadataLabel = "modpack_metadata";
 
-        [field: SerializeField]
-        public List<RobotMetadataSO> LoadedRobots = new();
-        [field: SerializeField]
-        public List<BaseModpackSO> LoadedModpacks = new();
+        public readonly List<RobotMetadataSO> LoadedRobots = new();
+        public readonly List<BaseModpackSO> LoadedModpacks = new();
+
         public event Action<float, string> OnProgressUpdated;
 
-        /// <summary>Where the loading bar hands over from the base packs to mods, which get the last stretch.</summary>
-        public const float ModProgressStart = 0.75f;
+        public bool AllRobotsLoaded => RobotLoadingCoroutine == null && ModLoadingCoroutine == null;
 
-        public bool AllRobotsLoaded => _baseRobotsLoaded && _modManager != null && _modManager.ModsLoaded;
-        private bool _baseRobotsLoaded;
+        public Coroutine RobotLoadingCoroutine { get; private set; }
+        public Coroutine ModLoadingCoroutine { get; private set; }
+        // public bool ModdedRobotsLoaded { get; private set; }
 
-        public void ReportProgress(float progress, string message)
-        {
-            OnProgressUpdated?.Invoke(Mathf.Clamp01(progress), message);
-        }
+        [SerializeField] private BaseModpackSO defaultModpack;
 
-        /// <summary>
-        /// Bundles handed over by menus that get destroyed on scene change. Unloading an AssetBundle
-        /// closes its file handle, and audio streams out of that file lazily rather than being pulled
-        /// into memory up front - so a bundle that is unloaded while its robots are still in use plays
-        /// no sound and spams FMOD file-not-found. Holding the reference here keeps it open for the
-        /// session, which is how locally installed mods already behave.
-        /// </summary>
-        private readonly List<AssetBundle> _retainedModBundles = new();
-
-        /// <summary>
-        /// Takes ownership of a mod's AssetBundle so it stays loaded for as long as its assets might
-        /// be used. Safe to call repeatedly with the same bundle.
-        /// </summary>
-        public void RetainModBundle(AssetBundle bundle)
-        {
-            if (bundle == null || _retainedModBundles.Contains(bundle))
-            {
-                return;
-            }
-
-            _retainedModBundles.Add(bundle);
-        }
-
-        /// <summary>
-        /// Drops a retained bundle and unloads it, releasing the file handle. Needed when a mod is
-        /// uninstalled: while the bundle is open the OS will not let Steam delete the files, which is
-        /// why a "reinstall" afterwards completes instantly without downloading anything.
-        /// Loaded assets survive - only the bundle's own file and compressed data go away.
-        /// </summary>
-        public void ReleaseModBundle(AssetBundle bundle)
-        {
-            if (bundle == null)
-            {
-                return;
-            }
-
-            _retainedModBundles.Remove(bundle);
-            bundle.Unload(false);
-        }
-
-        /// <summary>
-        /// Removes a modpack and its robots from the loaded lists, for when a mod is uninstalled.
-        /// A robot still listed by another registered modpack is kept, since packs may share one.
-        /// </summary>
-        public void UnregisterModpack(BaseModpackSO modpack)
-        {
-            if (modpack == null)
-            {
-                return;
-            }
-
-            LoadedModpacks.Remove(modpack);
-
-            if (modpack.Robots == null)
-            {
-                return;
-            }
-
-            foreach (var robot in modpack.Robots)
-            {
-                if (robot == null)
-                {
-                    continue;
-                }
-
-                var ownedElsewhere = LoadedModpacks.Any(other =>
-                    other != null && other.Robots != null && other.Robots.Contains(robot));
-
-                if (!ownedElsewhere)
-                {
-                    LoadedRobots.Remove(robot);
-                }
-            }
-        }
-
-        /// <summary>Registers a loaded modpack and its robots exactly once.</summary>
-        public void RegisterModpack(BaseModpackSO modpack)
-        {
-            if (modpack == null)
-            {
-                return;
-            }
-
-            if (!LoadedModpacks.Contains(modpack))
-            {
-                LoadedModpacks.Add(modpack);
-            }
-
-            if (modpack.Robots == null)
-            {
-                return;
-            }
-
-            foreach (var robot in modpack.Robots)
-            {
-                if (robot != null && !LoadedRobots.Contains(robot))
-                {
-                    LoadedRobots.Add(robot);
-                }
-            }
-        }
-        
         private void Awake()
         {
             if (Instance != null && Instance != this)
@@ -149,190 +45,307 @@ namespace GameSystems.Management
 
         private void Start()
         {
-            _modManager = FindFirstObjectByType<ModManager>();
-
-            StartCoroutine(LoadAllRobots());
-        }
-
-        private IEnumerator LoadAllRobots()
-        {
-            // Allow singleton Start methods, including SelectedGameManager's default selection, to complete.
-            yield return null;
-
-            yield return LoadBaseRobots();
-
-            _modManager ??= FindFirstObjectByType<ModManager>();
-            
-            if (!_modManager)
+            if (LoadedRobots.Count > 0)
             {
-                Debug.LogError("ModManager not found.");
-                yield break;
-            }
-            
-            yield return _modManager.LoadMods(GetSelectedModpackGuids());
-
-            EnsureSelectedModpackFallbacks();
-            
-            _baseRobotsLoaded = true;
-        }
-
-        private IEnumerator LoadBaseRobots()
-        {
-            ReportProgress(0f, "Loading base robots...");
-            
-            var baseModpacks = Resources.LoadAll<BaseModpackSO>("BaseRobots");
-            var selectedGuids = GetSelectedModpackGuids();
-
-            if (selectedGuids.Count == 0 && TryGetDefaultBaseModpack(out var defaultModpack))
-            {
-                Debug.LogWarning($"No modpack GUID is selected. Falling back to '{defaultModpack.ModpackName}' for the selected game.");
-                ApplyFallbackToEmptySelections(defaultModpack);
-            }
-
-            // Every game's official pack, not just the one selected at startup. Games are switched
-            // without re-running loading, so anything skipped here is unavailable for the rest of the
-            // session - which is what left Reefscape with no modpack after starting up in Rebuilt.
-            // These ship in Resources and are cheap to hold; workshop mods stay filtered by selection
-            // because they are the expensive ones.
-            var baseModpacksToLoad = baseModpacks
-                .Where(modpack => modpack != null)
-                .ToList();
-
-            var totalBaseModpacks = baseModpacksToLoad.Count;
-
-            if (totalBaseModpacks == 0)
-            {
-                ReportProgress(ModProgressStart, "No base robots found.");
-                _baseRobotsLoaded = true;
-                yield break;
-            }
-
-            for (var i = 0; i < totalBaseModpacks; i++)
-            {
-                var modpack = baseModpacksToLoad[i];
-                RegisterModpack(modpack);
-
-                var progress = ((i + 1f) / totalBaseModpacks) * ModProgressStart;
-                ReportProgress(progress, $"Loading base robot modpack {i + 1}/{totalBaseModpacks}...");
-
-                yield return null;
-            }
-            
-            _baseRobotsLoaded = true;
-        }
-
-        private HashSet<string> GetSelectedModpackGuids()
-        {
-            var selectedGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var playerSettings = MatchManager.Instance?.MatchSettings?.playerSettings;
-            if (playerSettings == null)
-            {
-                return selectedGuids;
-            }
-
-            foreach (var settings in playerSettings)
-            {
-                if (!string.IsNullOrWhiteSpace(settings?.modpackGuid))
-                {
-                    selectedGuids.Add(settings.modpackGuid);
-                }
-            }
-
-            return selectedGuids;
-        }
-
-        private void EnsureSelectedModpackFallbacks()
-        {
-            var manager = MatchManager.Instance;
-            var playerSettings = manager?.MatchSettings?.playerSettings;
-            if (playerSettings == null)
-            {
+                Debug.LogWarning("RobotLoader already has loaded robots, skipping load.");
                 return;
             }
 
-            BaseModpackSO defaultModpack = null;
-            var settingsChanged = false;
-            foreach (var settings in playerSettings)
-            {
-                if (settings == null ||
-                    (!string.IsNullOrWhiteSpace(settings.modpackGuid) &&
-                     LoadedModpacks.Any(modpack => modpack != null &&
-                                                   string.Equals(modpack.GetGuid(), settings.modpackGuid,
-                                                       StringComparison.OrdinalIgnoreCase))))
-                {
-                    continue;
-                }
-
-                defaultModpack ??= GetDefaultBaseModpack();
-                if (defaultModpack == null)
-                {
-                    Debug.LogWarning($"Could not resolve modpack GUID '{settings.modpackGuid}' because no official default modpack exists for the selected game.");
-                    continue;
-                }
-
-                RegisterModpack(defaultModpack);
-                Debug.LogWarning($"Modpack GUID '{settings.modpackGuid}' is empty or unavailable. Falling back to '{defaultModpack.ModpackName}' for the selected game.");
-                settings.modpackGuid = defaultModpack.GetGuid();
-                if (!defaultModpack.Robots.Any(robot => robot != null && robot.GetGuid() == settings.robotGuid))
-                {
-                    settings.robotGuid = string.Empty;
-                }
-
-                settingsChanged = true;
-            }
-
-            if (settingsChanged)
-            {
-                manager.SaveSettings();
-            }
+            RobotLoadingCoroutine = StartCoroutine(LoadRobotMetadata());
+            ModLoadingCoroutine = StartCoroutine(LoadModAssets());
         }
 
-        private void ApplyFallbackToEmptySelections(BaseModpackSO defaultModpack)
+        public IEnumerator LoadRobotMetadata()
         {
-            var manager = MatchManager.Instance;
-            var playerSettings = manager?.MatchSettings?.playerSettings;
-            if (playerSettings == null)
+            OnProgressUpdated?.Invoke(0f, "Finding robot metadata...");
+
+            if (defaultModpack != null && !LoadedModpacks.Contains(defaultModpack))
             {
+                LoadedModpacks.Add(defaultModpack);
+            }
+
+            var locationHandle =
+                Addressables.LoadResourceLocationsAsync(RobotMetadataLabel, typeof(RobotMetadataSO));
+            yield return locationHandle;
+
+            if (locationHandle.Status != AsyncOperationStatus.Succeeded)
+            {
+                Debug.LogError($"Failed to find resource locations for label {RobotMetadataLabel}");
+                OnProgressUpdated?.Invoke(0.5f, $"Failed to find robot metadata: {locationHandle.Status}");
+                // AllRobotsLoaded = true;
+                RobotLoadingCoroutine = null;
+                yield break;
+            }
+
+            var locations = locationHandle.Result;
+            var totalLocations = locations.Count;
+            if (totalLocations == 0)
+            {
+                OnProgressUpdated?.Invoke(0.5f, "No robot metadata found.");
+            }
+
+            for (var i = 0; i < totalLocations; i++)
+            {
+                var location = locations[i];
+                var loadHandle = Addressables.LoadAssetAsync<RobotMetadataSO>(location);
+
+                yield return loadHandle;
+
+                if (loadHandle.Status == AsyncOperationStatus.Succeeded)
+                {
+                    var robot = loadHandle.Result;
+                    if (!LoadedRobots.Contains(robot))
+                    {
+                        robot.IsModded = false;
+                        LoadedRobots.Add(robot);
+                        var key = location.PrimaryKey;
+                        Debug.Log($"Loaded robot metadata: {robot} with key {key}");
+                    }
+                    else
+                    {
+                        Debug.LogWarning(
+                            $"Robot metadata {robot} already loaded, skipping.");
+                    }
+
+                    if (!defaultModpack.Robots.Contains(robot))
+                    {
+                        defaultModpack.Robots.Add(robot);
+                    }
+                    else
+                    {
+                        Debug.LogWarning(
+                            $"Robot metadata {robot} already in default modpack, skipping.");
+                    }
+                }
+                else
+                {
+                    Debug.LogError($"Failed to load robot metadata from {location.PrimaryKey}");
+                }
+
+                var phaseProgress = totalLocations > 0 ? ((i + 1f) / totalLocations) * 0.5f : 0.5f;
+                OnProgressUpdated?.Invoke(phaseProgress,
+                    $"Loading robot metadata {i + 1}/{Math.Max(1, totalLocations)}...");
+                Debug.Log($"Loading robot metadata {i + 1}/{Math.Max(1, totalLocations)}...");
+            }
+
+            LoadedRobots.Sort((a, b) => a.TeamNumber.CompareTo(b.TeamNumber));
+            if (defaultModpack != null && defaultModpack.Robots != null)
+            {
+                defaultModpack.Robots.Sort((a, b) =>
+                    a.TeamNumber.CompareTo(b.TeamNumber));
+            }
+
+            OnProgressUpdated?.Invoke(0.5f, "Finished loading robot metadata.");
+            Debug.Log("Finished loading base robot metadata.");
+
+            Addressables.Release(locationHandle);
+
+            RobotLoadingCoroutine = null;
+        }
+
+        public IEnumerator LoadModAssets()
+        {
+            yield return new WaitUntil(() => RobotLoadingCoroutine == null);
+
+            Debug.Log("Starting to load mod assets...");
+
+            var modPath = Path.Combine(Application.persistentDataPath, "Mods");
+
+            if (!Directory.Exists(modPath))
+            {
+                Debug.LogWarning($"Mod directory {modPath} does not exist. Creating mod directory.");
+                Directory.CreateDirectory(modPath);
+                OnProgressUpdated?.Invoke(1f, "No mods found.");
+                // ModdedRobotsLoaded = true;
+                ModLoadingCoroutine = null;
+                yield break;
+            }
+            
+
+            var modDirs = Directory.GetDirectories(modPath);
+            if (modDirs.Length == 0)
+            {
+                OnProgressUpdated?.Invoke(1f, "No mods found.");
+                // ModdedRobotsLoaded = true;
+                ModLoadingCoroutine = null;
+                yield break;
+            }
+
+            Debug.Log($"Mod directories found: {string.Join(", ", modDirs)}");
+            for (var i = 0; i < modDirs.Length; i++)
+            {
+                var modDir = modDirs[i];
+
+                LoadModAssembly(modDir);
+
+                var catalogPath = Path.Combine(modDir, "catalog.json");
+
+                if (!File.Exists(catalogPath))
+                {
+                    Debug.LogWarning($"Modded robot at {modDir} not found.");
+                    var partial = 0.5f + ((i + 1f) / modDirs.Length) * 0.5f;
+                    OnProgressUpdated?.Invoke(partial, $"Skipping mod ({i + 1}/{modDirs.Length}).");
+                    continue;
+                }
+
+                Debug.Log($"Preparing to load mod catalog file: {catalogPath}");
+
+                var json = File.ReadAllText(catalogPath);
+
+                json = json.Replace("\\", "/");
+
+                var modAaPlatformDir = Path.Combine(modDir, "aa", "StandaloneWindows64") + Path.DirectorySeparatorChar;
+                var modAaPlatformUri = new Uri(Path.GetFullPath(modAaPlatformDir)).AbsoluteUri;
+
+                var persistentDataUriPrefix =
+                    new Uri(Application.persistentDataPath + Path.DirectorySeparatorChar).AbsoluteUri;
+
+                json = Regex.Replace(json,
+                    @"\{UnityEngine\.AddressableAssets\.Addressables\.RuntimePath\}[/\\]StandaloneWindows64[/\\]",
+                    modAaPlatformUri,
+                    RegexOptions.IgnoreCase);
+
+                json = Regex.Replace(json,
+                    @"\{UnityEngine\.Application\.persistentDataPath\}[/\\]",
+                    persistentDataUriPrefix,
+                    RegexOptions.IgnoreCase);
+
+                json = Regex.Replace(json,
+                    @"(?<!https?:\/\/)[/\\]?aa[/\\]StandaloneWindows64[/\\]",
+                    modAaPlatformUri,
+                    RegexOptions.IgnoreCase);
+
+                var tempCatalog = Path.Combine(Path.GetTempPath(), $"catalog_mod_{Guid.NewGuid()}.json");
+                File.WriteAllText(tempCatalog, json);
+
+                var catalogUri = new Uri(Path.GetFullPath(tempCatalog)).AbsoluteUri;
+                Debug.Log($"Loading rewritten catalog URI={catalogUri}");
+
+                var loadCatalogHandle = Addressables.LoadContentCatalogAsync(catalogUri, false);
+                yield return loadCatalogHandle;
+
+                if (loadCatalogHandle.Status == AsyncOperationStatus.Succeeded)
+                {
+                    Debug.Log($"Successfully loaded mod catalog from {catalogUri}");
+
+                    var locationHandle =
+                        Addressables.LoadResourceLocationsAsync(ModpackMetadataLabel, typeof(BaseModpackSO));
+                    yield return locationHandle;
+
+                    if (locationHandle.Status == AsyncOperationStatus.Succeeded)
+                    {
+                        var locations = locationHandle.Result;
+                        for (var j = 0; j < locations.Count; j++)
+                        {
+                            var location = locations[j];
+                            var loadHandle = Addressables.LoadAssetAsync<BaseModpackSO>(location);
+                            yield return loadHandle;
+
+                            if (loadHandle.Status == AsyncOperationStatus.Succeeded)
+                            {
+                                if (!LoadedModpacks.Contains(loadHandle.Result))
+                                {
+                                    LoadedModpacks.Add(loadHandle.Result);
+                                    Debug.Log($"Loaded modpack metadata: {loadHandle.Result}");
+                                }
+
+                                foreach (var robotMetadataSo in loadHandle.Result.Robots)
+                                {
+                                    if (robotMetadataSo == null)
+                                    {
+                                        Debug.LogWarning(
+                                            $"Modpack {loadHandle.Result} contains a null robot reference, skipping.");
+                                        continue;
+                                    }
+                                    
+                                    robotMetadataSo.IsModded = true;
+                                    if (!LoadedRobots.Contains(robotMetadataSo))
+                                    {
+                                        LoadedRobots.Add(robotMetadataSo);
+                                        Debug.Log(
+                                            $"Loaded modded robot metadata: {robotMetadataSo} from modpack {loadHandle.Result}");
+                                    }
+                                    else
+                                    {
+                                        Debug.LogWarning(
+                                            $"Robot metadata {robotMetadataSo} from modpack {loadHandle.Result} already loaded, skipping.");
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                Debug.LogError($"Failed to load modpack metadata from {location.PrimaryKey}");
+                            }
+                        }
+                        
+                        Addressables.Release(locationHandle);
+                    }
+                    else
+                    {
+                        Debug.LogError($"Failed to find resource locations for label {ModpackMetadataLabel}");
+                    }
+                }
+                else
+                {
+                    Debug.LogError($"Failed to load catalog from {catalogUri}");
+                }
+                
+                Addressables.Release(loadCatalogHandle);
+
+                try
+                {
+                    if (File.Exists(tempCatalog))
+                    {
+                        File.Delete(tempCatalog);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"Failed to unload mod catalog from {catalogUri}: {e.Message}");
+                }
+
+                var progress = 0.5f + ((i + 1f) / modDirs.Length) * 0.5f;
+                OnProgressUpdated?.Invoke(progress, $"Loading mods ({i + 1}/{modDirs.Length})...");
+            }
+
+
+            LoadedRobots.Sort((firstRobot, secondRobot) => firstRobot.TeamNumber.CompareTo(secondRobot.TeamNumber));
+            LoadedModpacks.ForEach(modPack => modPack.Robots.Sort((firstRobot, secondRobot) =>
+                firstRobot.TeamNumber.CompareTo(secondRobot.TeamNumber)));
+            // ModdedRobotsLoaded = true;
+            ModLoadingCoroutine = null;
+            OnProgressUpdated?.Invoke(1f, "Finished loading mods.");
+            Debug.Log("Finished loading all mod assets.");
+        }
+
+        private void LoadModAssembly(string modDir)
+        {
+            var dllPaths = Directory.GetFiles(modDir, "*.dll");
+
+            if (dllPaths.Length == 0)
+            {
+                Debug.LogWarning($"No DLLs found in mod directory {modDir}, skipping assembly load.");
                 return;
             }
 
-            var settingsChanged = false;
-            foreach (var settings in playerSettings)
+            foreach (var dllPath in dllPaths)
             {
-                if (settings == null || !string.IsNullOrWhiteSpace(settings.modpackGuid))
+                if (!File.Exists(dllPath))
                 {
-                    continue;
+                    Debug.LogWarning($"Mod assembly DLL not found at {dllPath}, skipping assembly load.");
+                    return;
                 }
 
-                settings.modpackGuid = defaultModpack.GetGuid();
-                settings.robotGuid = string.Empty;
-                settingsChanged = true;
+                try
+                {
+                    var assembly = Assembly.LoadFrom(dllPath);
+                    Debug.Log($"Successfully loaded mod assembly from {dllPath}: {assembly.FullName}");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"Failed to load mod assembly from {dllPath}: {e.Message}");
+                }
             }
-
-            if (settingsChanged)
-            {
-                manager.SaveSettings();
-            }
-        }
-
-        private bool TryGetDefaultBaseModpack(out BaseModpackSO defaultModpack)
-        {
-            defaultModpack = GetDefaultBaseModpack();
-            return defaultModpack != null;
-        }
-
-        private static BaseModpackSO GetDefaultBaseModpack()
-        {
-            var selectedGame = SelectedGameManager.Instance?.SelectedGame;
-            if (selectedGame == null)
-            {
-                Debug.LogWarning("No selected game is available; cannot choose a default modpack.");
-                return null;
-            }
-
-            return Resources.LoadAll<BaseModpackSO>("BaseRobots")
-                .FirstOrDefault(modpack => modpack != null && modpack.GameOption != null &&
-                                           modpack.GameOption.GetGuid() == selectedGame.GetGuid());
         }
     }
 }

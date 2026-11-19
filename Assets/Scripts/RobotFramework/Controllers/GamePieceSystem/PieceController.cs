@@ -31,14 +31,7 @@ namespace RobotFramework.Controllers.GamePieceSystem
             return MovementStates[instanceId];
         }
 
-        public static MoSimResult<MoSimLib.Void> ClearState(int instanceId)
-        {
-            var version = MoSim.ActiveVersion;
-            ClearStateV1(instanceId);
-            return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-        }
-
-        private static void ClearStateV1(int instanceId)
+        public static void ClearState(int instanceId)
         {
             MovementStates.Remove(instanceId);
         }
@@ -46,31 +39,7 @@ namespace RobotFramework.Controllers.GamePieceSystem
         /// <summary>
         /// Returns 0 if still in transit, 1 if target reached, -1 if broke.
         /// </summary>
-        public static MoSimResult<int> MoveToBreakable<TData>(
-            GamePiece<TData> gamePiece,
-            Transform target,
-            float intakeSpeed,
-            float intakeForce,
-            float maxDistance,
-            float accuracy,
-            float rotationForce,
-            float maxRotationSpeed,
-            bool useRotation,
-            bool planarTolerance,
-            Vector3 boxExtents,
-            bool lockXAxis,
-            bool lockYAxis,
-            bool lockZAxis,
-            out Vector3 distance,
-            out float distanceMagnitude) where TData : IGamePieceData
-        {
-            var version = MoSim.ActiveVersion;
-            return MoSimResult<int>.Success(MoveToBreakableV1(gamePiece, target, intakeSpeed, intakeForce, maxDistance, accuracy,
-                rotationForce, maxRotationSpeed, useRotation, planarTolerance, boxExtents, lockXAxis,
-                lockYAxis, lockZAxis, out distance, out distanceMagnitude));
-        }
-
-        private static int MoveToBreakableV1<TData>(
+        public static int MoveToBreakable<TData>(
             GamePiece<TData> gamePiece,
             Transform target,
             float intakeSpeed,
@@ -112,7 +81,7 @@ namespace RobotFramework.Controllers.GamePieceSystem
             var currentPose = gamePiece.transform.position;
             distance = Difference(target.position, currentPose);
             var rotation = gamePiece.transform.rotation;
-            var targetRotation = ResolveTargetRotation(rotation, target.rotation, gamePiece.GamePieceData);
+            var targetRotation = target.rotation;
             var rotationError = Quaternion.Angle(rotation, targetRotation);
             var rotationVelocity = Quaternion.Euler(gamePiece.rigidbody.angularVelocity);
             var currentVelocity = gamePiece.rigidbody.velocity;
@@ -132,16 +101,21 @@ namespace RobotFramework.Controllers.GamePieceSystem
                 acceleration = target.TransformDirection(localAcceleration);
             }
 
-            var forceMode = ForceMode.Acceleration;
-            gamePiece.rigidbody.AddForce(acceleration, forceMode);
-            var rb = Utils.FindParentObjectComponent<Rigidbody>(target.gameObject);
-            if (rb) rb.AddForceAtPosition(-acceleration, gamePiece.transform.position, forceMode);
+            gamePiece.rigidbody.AddForce(acceleration, ForceMode.Acceleration);
             distanceMagnitude = distance.magnitude;
 
             // Handle rotation
             if (rotationError > 0.1f && useRotation)
             {
-                var shortestTargetRotation = targetRotation;
+                var flippedRotationWorld = targetRotation * Quaternion.AngleAxis(180f, Vector3.up);
+                var objectForwardWorld = rotation * Vector3.forward.normalized;
+                var targetForwardWorld = targetRotation * Vector3.forward;
+                var flippedForwardWorld = flippedRotationWorld * Vector3.forward;
+
+                var angleToTarget = Vector3.Angle(objectForwardWorld, targetForwardWorld);
+                var angleToFlipped = Vector3.Angle(objectForwardWorld, flippedForwardWorld);
+
+                var shortestTargetRotation = angleToFlipped < angleToTarget ? flippedRotationWorld : targetRotation;
 
                 if (Quaternion.Dot(rotation, shortestTargetRotation) < 0)
                 {
@@ -160,7 +134,6 @@ namespace RobotFramework.Controllers.GamePieceSystem
                 var angularAcceleration = angularVelocityDelta * rotationForce;
 
                 gamePiece.rigidbody.AddTorque(angularAcceleration, ForceMode.Force);
-                if (rb) ApplyTorqueAtPosition(rb, -angularAcceleration, gamePiece.transform.position);
             }
 
             // Check completion
@@ -195,40 +168,7 @@ namespace RobotFramework.Controllers.GamePieceSystem
                 return -1;
         }
 
-        public static MoSimResult<int> MoveTo<TData>(
-            GamePiece<TData> gamePiece,
-            TData gamePieceData,
-            Transform target,
-            float speed,
-            float angularSpeed,
-            out Vector3 distance,
-            out float distanceMagnitude) where TData : IGamePieceData
-        {
-            var version = MoSim.ActiveVersion;
-            return MoSimResult<int>.Success(MoveToV1(gamePiece, gamePieceData, target, speed, angularSpeed, out distance,
-                out distanceMagnitude));
-        }
-
-        /// <summary>
-        /// Applies a pure torque at a world-space position. Unity exposes no AddTorqueAtPosition;
-        /// two equal and opposite forces form an equivalent force couple with no net force.
-        /// </summary>
-        private static void ApplyTorqueAtPosition(Rigidbody rigidbody, Vector3 torque, Vector3 position)
-        {
-            if (torque.sqrMagnitude <= Mathf.Epsilon) return;
-
-            const float leverLength = 0.1f;
-            var referenceAxis = Mathf.Abs(Vector3.Dot(torque.normalized, Vector3.up)) < 0.99f
-                ? Vector3.up
-                : Vector3.right;
-            var lever = Vector3.Cross(torque, referenceAxis).normalized * leverLength;
-            var force = Vector3.Cross(torque, lever) / (2f * lever.sqrMagnitude);
-
-            rigidbody.AddForceAtPosition(force, position + lever, ForceMode.Force);
-            rigidbody.AddForceAtPosition(-force, position - lever, ForceMode.Force);
-        }
-
-        private static int MoveToV1<TData>(
+        public static int MoveTo<TData>(
             GamePiece<TData> gamePiece,
             TData gamePieceData,
             Transform target,
@@ -242,9 +182,6 @@ namespace RobotFramework.Controllers.GamePieceSystem
 
             if (speed == 0)
             {
-                gamePiece.transform.rotation = ResolveTargetRotation(
-                    gamePiece.transform.rotation, target.rotation, gamePieceData);
-                gamePiece.rigidbody.rotation = gamePiece.transform.rotation;
                 state.Moving = false;
                 distance = Vector3.zero;
                 distanceMagnitude = 0;
@@ -272,8 +209,10 @@ namespace RobotFramework.Controllers.GamePieceSystem
             distanceMagnitude = distance.magnitude;
 
             // Rotation with symmetry support
-            var shortestTargetRotation = ResolveTargetRotation(
-                gamePiece.transform.rotation, target.rotation, gamePieceData);
+            var targetRotation = target.rotation;
+            var shortestTargetRotation = gamePieceData.HasSymmetry
+                ? FindShortestSymmetricRotation(gamePiece.transform.rotation, targetRotation, gamePieceData.SymmetryType)
+                : targetRotation;
 
             gamePiece.transform.rotation = Quaternion.RotateTowards(
                 gamePiece.transform.rotation,
@@ -283,9 +222,8 @@ namespace RobotFramework.Controllers.GamePieceSystem
 
             if (angularSpeed == 0)
             {
-                gamePiece.transform.rotation = shortestTargetRotation;
+                gamePiece.transform.localRotation = Quaternion.identity;
             }
-            gamePiece.rigidbody.rotation = gamePiece.transform.rotation;
 
             if (distanceMagnitude <= 0.25f * 0.0254f)
             {
@@ -296,20 +234,7 @@ namespace RobotFramework.Controllers.GamePieceSystem
             return 0;
         }
 
-        internal static Quaternion ResolveTargetRotation(Quaternion current, Quaternion target, IGamePieceData gamePieceData)
-        {
-            return gamePieceData.HasSymmetry
-                ? FindShortestSymmetricRotation(current, target, gamePieceData.SymmetryType)
-                : target;
-        }
-
-        public static MoSimResult<Quaternion> FindShortestSymmetricRotation(Quaternion current, Quaternion target, SymmetryType symmetryType)
-        {
-            var version = MoSim.ActiveVersion;
-            return MoSimResult<Quaternion>.Success(FindShortestSymmetricRotationV1(current, target, symmetryType));
-        }
-
-        private static Quaternion FindShortestSymmetricRotationV1(Quaternion current, Quaternion target, SymmetryType symmetryType)
+        public static Quaternion FindShortestSymmetricRotation(Quaternion current, Quaternion target, SymmetryType symmetryType)
         {
             if (symmetryType == SymmetryType.None)
             {

@@ -1,19 +1,17 @@
+using Games.Reefscape.Robots;
 using MoSimCore.Enums;
 using MoSimCore.Interfaces;
-using RobotFramework;
 using UnityEngine;
 
 namespace Games.Reefscape.Scoring.Scorers
 {
     public class AutoLineScorer : MonoBehaviour, IScorer
     {
-        private RobotBase _robotBase;
+        private ReefscapeRobotBase _robotBase;
         [SerializeField] private BoxCollider startLineTrigger;
-        [SerializeField] private BoxCollider wideStartLineTrigger;
         
         // State tracking for scoring
-        private bool _hasBeenInInnerZone;
-        private bool _hasBeenInWideOnlyZone;
+        private bool _hasBeenInStartZone;
         private bool _hasAlreadyScored;
         private bool _initialized;
         
@@ -34,8 +32,7 @@ namespace Games.Reefscape.Scoring.Scorers
                 return;
             }
             
-            _hasBeenInInnerZone = false;
-            _hasBeenInWideOnlyZone = false;
+            _hasBeenInStartZone = false;
             _hasAlreadyScored = false;
 
             // Register with score handler if not already registered
@@ -50,7 +47,7 @@ namespace Games.Reefscape.Scoring.Scorers
         {
             if (_initialized) return;
             
-            _robotBase = GetComponent<RobotBase>();
+            _robotBase = GetComponent<ReefscapeRobotBase>();
             if (_robotBase != null)
             {
                 Alliance = _robotBase.Alliance;
@@ -61,24 +58,18 @@ namespace Games.Reefscape.Scoring.Scorers
         public void SetStartLineTrigger(BoxCollider collider)
         {
             if (collider == null) return;
-
+            
             InitializeRobotBase();
-
+            
             startLineTrigger = collider;
             enabled = true;
-        }
-
-        public void SetWideStartLineTrigger(BoxCollider collider)
-        {
-            wideStartLineTrigger = collider;
         }
 
         public void ResetScorerState()
         {
             InitializeRobotBase();
             
-            _hasBeenInInnerZone = false;
-            _hasBeenInWideOnlyZone = false;
+            _hasBeenInStartZone = false;
             _hasAlreadyScored = false;
         }
 
@@ -93,7 +84,7 @@ namespace Games.Reefscape.Scoring.Scorers
                 // During non-Auto periods, only persist if already scored
                 if (_hasAlreadyScored)
                 {
-                    reefscapeData.LeavePoints += 3;
+                    reefscapeData.LeavePoints = 3;
                 }
                 return;
             }
@@ -108,34 +99,36 @@ namespace Games.Reefscape.Scoring.Scorers
                 return;
             }
 
-            bool robotInInnerZone = IsInsideCollider(startLineTrigger);
-            bool robotInWideZone = wideStartLineTrigger != null && IsInsideCollider(wideStartLineTrigger);
-
-            if (robotInInnerZone)
-                _hasBeenInInnerZone = true;
-            else if (robotInWideZone && !_hasBeenInInnerZone)
-                _hasBeenInWideOnlyZone = true;
-
-            // Robots that spawned in the inner zone must exit the inner zone.
-            // Robots that spawned only in the wide zone must exit the wide zone.
-            bool hasLeft = _hasBeenInInnerZone ? !robotInInnerZone : !robotInWideZone;
-
-            if (!_hasAlreadyScored && (_hasBeenInInnerZone || _hasBeenInWideOnlyZone) && hasLeft)
+            bool robotInZone = IsRobotInZone();
+            
+            if (robotInZone)
+            {
+                _hasBeenInStartZone = true;
+            }
+            
+            // Award points on transition: robot was in zone, now it's out
+            if (!_hasAlreadyScored && _hasBeenInStartZone && !robotInZone)
             {
                 _hasAlreadyScored = true;
+                reefscapeData.LeavePoints = 3;
             }
-
+            
             // Persist points during Auto once awarded
             if (_hasAlreadyScored)
             {
-                reefscapeData.LeavePoints += 3;
+                reefscapeData.LeavePoints = 3;
             }
         }
 
-        private bool IsInsideCollider(BoxCollider col)
+        private bool IsRobotInZone()
         {
-            Vector3 closestPoint = col.ClosestPoint(_robotBase.transform.position);
-            return Vector3.Distance(closestPoint, _robotBase.transform.position) < 0.5f;
+            // Use the robot's position and check distance to closest point on the collider
+            // If the distance is very small, the robot is inside the collider bounds
+            Vector3 closestPoint = startLineTrigger.ClosestPoint(_robotBase.transform.position);
+            float distance = Vector3.Distance(closestPoint, _robotBase.transform.position);
+            
+            // If we're within a small threshold, consider the robot in the zone
+            return distance < 0.5f;
         }
     }
 }

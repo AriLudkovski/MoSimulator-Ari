@@ -1,5 +1,4 @@
 using System;
-using MoSimLib;
 using UnityEngine;
 
 namespace RobotFramework.Components
@@ -196,40 +195,19 @@ namespace RobotFramework.Components
             }
         }
 
-        public MoSimResult<MoSimLib.Void> MoveToPosition(Vector3 newPosition)
-        {
-            var version = MoSim.ActiveVersion;
-            MoveToPositionV1(newPosition);
-            return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-        }
-
-        private void MoveToPositionV1(Vector3 newPosition)
+        public void MoveToPosition(Vector3 newPosition)
         {
             targetPosition = newPosition;
             isInterpolatingPosition = true;
         }
 
-        public MoSimResult<MoSimLib.Void> RotateToRotation(Quaternion newRotation)
-        {
-            var version = MoSim.ActiveVersion;
-            RotateToRotationV1(newRotation);
-            return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-        }
-
-        private void RotateToRotationV1(Quaternion newRotation)
+        public void RotateToRotation(Quaternion newRotation)
         {
             targetRotation = newRotation;
             isInterpolatingRotation = true;
         }
 
-        public MoSimResult<MoSimLib.Void> MoveToPositionAndRotation(Vector3 newPosition, Quaternion newRotation)
-        {
-            var version = MoSim.ActiveVersion;
-            MoveToPositionAndRotationV1(newPosition, newRotation);
-            return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-        }
-
-        private void MoveToPositionAndRotationV1(Vector3 newPosition, Quaternion newRotation)
+        public void MoveToPositionAndRotation(Vector3 newPosition, Quaternion newRotation)
         {
             targetPosition = newPosition;
             targetRotation = newRotation;
@@ -237,25 +215,12 @@ namespace RobotFramework.Components
             isInterpolatingRotation = true;
         }
 
-        public MoSimResult<bool> IsInterpolating()
-        {
-            var version = MoSim.ActiveVersion;
-            return MoSimResult<bool>.Success(IsInterpolatingV1());
-        }
-
-        private bool IsInterpolatingV1()
+        public bool IsInterpolating()
         {
             return isInterpolatingPosition || isInterpolatingRotation;
         }
 
-        public MoSimResult<MoSimLib.Void> StopInterpolation()
-        {
-            var version = MoSim.ActiveVersion;
-            StopInterpolationV1();
-            return MoSimResult<MoSimLib.Void>.Success(new MoSimLib.Void());
-        }
-
-        private void StopInterpolationV1()
+        public void StopInterpolation()
         {
             isInterpolatingPosition = false;
             isInterpolatingRotation = false;
